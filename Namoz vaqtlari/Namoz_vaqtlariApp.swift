@@ -9,9 +9,11 @@ import SwiftUI
 
 @main
 struct Namoz_vaqtlariApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+
     var body: some Scene {
-        WindowGroup {
-            ContentView()
+        Settings {
+            EmptyView() // We don't need a main window
         }
     }
 }
