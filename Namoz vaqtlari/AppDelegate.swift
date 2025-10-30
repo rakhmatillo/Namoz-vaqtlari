@@ -61,12 +61,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         refreshTimer?.invalidate()
     }
     @objc func refreshPrayerTimes() {
-
         PrayerTimeManager.shared.fetchMonthlyPrayerTimes(for: self.selectedRegionForStatus) { allTimes in
             guard let allTimes = allTimes else {
                 DispatchQueue.main.async {
                     self.statusItem.button?.title = "Yuklashda xatolik..."
                 }
+                self.refreshPrayerTimes()
                 return
             }
 
@@ -128,8 +128,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         finalComponents.hour = timeComponents.hour
         finalComponents.minute = timeComponents.minute
 
-        guard let target = calendar.date(from: finalComponents) else { return nil }
-
+        guard var target = calendar.date(from: finalComponents) else { return nil }
+        // If the target time is in the past, it must be tomorrow
+        if target <= now {
+            target = calendar.date(byAdding: .day, value: 1, to: target) ?? target
+        }
         let interval = Int(target.timeIntervalSince(now))
         if interval <= 0 { return nil }
 
