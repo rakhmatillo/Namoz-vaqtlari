@@ -7,8 +7,11 @@
 
 import SwiftUI
 
+
 struct MonthlyPrayerView: View {
     @State private var monthlyTimes: [DailyPrayerTime] = []
+    @State private var isLoading = false
+    @State private var errorMessage: String?
     
     @State private var selectedRegion: String = UserDefaults.standard.string(forKey: "selectedRegionForStatus") ?? "Toshkent"
     @State private var selectedYear = Calendar.current.component(.year, from: Date())
@@ -53,12 +56,25 @@ struct MonthlyPrayerView: View {
                     }
                 }
                 .frame(width: 150)
+                
+                if isLoading {
+                    ProgressView()
+                        .scaleEffect(0.7)
+                }
             }
             .padding(.bottom, 10)
 
-            Text("Oylik namoz vaqtlari")
-                .font(.title)
-                .padding(.bottom)
+            HStack {
+                Text("Oylik namoz vaqtlari")
+                    .font(.title)
+                
+                if let error = errorMessage {
+                    Text("⚠️ \(error)")
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                }
+            }
+            .padding(.bottom)
 
             HStack {
                 Text("Kun").frame(width: 40, alignment: .leading)
@@ -73,11 +89,17 @@ struct MonthlyPrayerView: View {
             .font(.headline)
             .padding(.bottom, 5)
 
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 4) {
-                    ForEach(monthlyTimes, id: \.date) { day in
-                        PrayerDayRow(day: day)
-                        Divider()
+            if monthlyTimes.isEmpty && !isLoading {
+                Text("Ma'lumot yo'q")
+                    .foregroundColor(.gray)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 4) {
+                        ForEach(monthlyTimes, id: \.date) { day in
+                            PrayerDayRow(day: day)
+                            Divider()
+                        }
                     }
                 }
             }
@@ -99,20 +121,53 @@ struct MonthlyPrayerView: View {
     }
 
     func fetchMonthlyTimes() {
-        let urlStr = "https://namoz-vaqtlari.more-info.uz:444/api/GetMonthlyPrayTimes/\(selectedRegion)/\(selectedYear)-\(selectedMonth)"
-        guard let url = URL(string: urlStr) else { return }
-
-        URLSession.shared.dataTask(with: url) { data, _, error in
-            guard let data = data, error == nil else { return }
-            do {
-                let decoded = try JSONDecoder().decode(MonthlyPrayerResponse.self, from: data)
-                DispatchQueue.main.async {
-                    self.monthlyTimes = decoded.response
-                }
-            } catch {
-                print("Decoding error:", error)
+        // First, try to load from AppDelegate cache if it matches current selection
+        let calendar = Calendar.current
+        let now = Date()
+        let currentYear = calendar.component(.year, from: now)
+        let monthFormatter = DateFormatter()
+        monthFormatter.dateFormat = "MM"
+        let currentMonth = monthFormatter.string(from: now)
+        
+        // Check if we're viewing current month and region
+        let isCurrentMonthAndYear = (selectedYear == currentYear && selectedMonth == currentMonth)
+        
+        if isCurrentMonthAndYear,
+           let appDelegate = NSApplication.shared.delegate as? AppDelegate,
+           let cachedTimes = appDelegate.cachedMonthlyTimes,
+           !cachedTimes.isEmpty,
+           cachedTimes.first?.region == selectedRegion {
+            
+            // Use cache! No need to fetch
+            DispatchQueue.main.async {
+                self.monthlyTimes = cachedTimes
+                self.errorMessage = nil
+                self.isLoading = false
             }
-        }.resume()
+            return
+        }
+        
+        // If not in cache, fetch from API
+        isLoading = true
+        errorMessage = nil
+        
+        PrayerTimeManager.shared.fetchMonthlyPrayerTimes(
+            for: selectedRegion,
+            year: selectedYear,
+            month: selectedMonth
+        ) { times in
+            DispatchQueue.main.async {
+                self.isLoading = false
+                
+                if let times = times {
+                    self.monthlyTimes = times
+                    self.errorMessage = nil
+                } else {
+                    self.errorMessage = "Internet yo'q"
+                    // Keep showing old data if available
+                }
+            }
+        }
     }
 
     static func getDayOfMonth(from dateString: String) -> String {
@@ -139,6 +194,7 @@ struct MonthlyPrayerView: View {
         return ""
     }
 }
+
 struct PrayerDayRow: View {
     let day: DailyPrayerTime
 
