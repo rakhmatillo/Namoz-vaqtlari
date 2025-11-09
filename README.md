@@ -327,8 +327,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 If you find this app useful, please:
 - ⭐ Star this repository
-- 🐛 Report bugs via [Issues](https://github.com/yourusername/namoz-vaqtlari/issues)
-- 💡 Suggest features via [Discussions](https://github.com/yourusername/namoz-vaqtlari/discussions)
+- 🐛 Report bugs via [Issues](https://github.com/rakhmatillo/namoz-vaqtlari/issues)
+- 💡 Suggest features via [Discussions](https://github.com/rakhmatillo/namoz-vaqtlari/discussions)
 - 📢 Share with friends and family
 
 ---
