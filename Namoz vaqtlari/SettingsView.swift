@@ -17,15 +17,23 @@ struct SettingsView: View {
     @AppStorage("notificationOffset") private var notificationOffset = 10
 
     private let regions = [
-        "Toshkent", "Andijon", "Buxoro", "Farg'ona", "Jizzax", "Xorazm",
+        "Toshkent", "Andijon", "Buxoro", "Farg'ona", "Jizzax", "Xiva",
         "Namangan", "Navoiy", "Qashqadaryo", "Qoraqalpog'iston", "Samarqand",
-        "Sirdaryo", "Surxondaryo"
+        "Sirdaryo", "Surxandaryo"
     ]
     private let languages = ["Oʻzbekcha", "Русский", "English"]
     private let offsetOptions = [0, 5, 10, 15, 30]
 
     var body: some View {
         Form {
+            Section(header: Text("Hudud")) {
+                Picker("Hudud", selection: $selectedRegionForStatus) {
+                    ForEach(regions, id: \.self) { region in
+                        Text(region)
+                    }
+                }
+            }
+            
             Section(header: Text("Dastur sozlamalari")) {
                 Toggle("Dasturni avtomatik ishga tushirish", isOn: $launchAtLogin)
                     .onChange(of: launchAtLogin) { newValue in
@@ -43,13 +51,7 @@ struct SettingsView: View {
                 }
             }
 
-            Section(header: Text("Hudud")) {
-                Picker("Hudud", selection: $selectedRegionForStatus) {
-                    ForEach(regions, id: \.self) { region in
-                        Text(region)
-                    }
-                }
-            }
+
 
 
             Section {

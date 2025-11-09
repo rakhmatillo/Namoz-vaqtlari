@@ -26,13 +26,30 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var lastFetchDate: Date?
     var retryTimer: Timer?
     var retryCount: Int = 0
+    var lastKnownRegion: String = ""
     
     func applicationDidFinishLaunching(_ notification: Notification) {
         NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)
             .sink { [weak self] _ in
-                self?.updateDisplay()
+                self?.handleSettingsChange()
             }
             .store(in: &cancellables)
+        
+        // Listen for wake from sleep
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(handleWakeFromSleep),
+            name: NSWorkspace.didWakeNotification,
+            object: nil
+        )
+        
+        // Listen for screen unlock/wake
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(handleScreenUnlock),
+            name: NSWorkspace.screensDidWakeNotification,
+            object: nil
+        )
         
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
@@ -59,6 +76,36 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         refreshPrayerTimes()
+        lastKnownRegion = selectedRegionForStatus
+    }
+    
+    func handleSettingsChange() {
+        print("handleSettingsChange called - Region: \(selectedRegionForStatus)")
+        
+        // Check if region changed
+        if lastKnownRegion != selectedRegionForStatus {
+            print("Region changed from \(lastKnownRegion) to \(selectedRegionForStatus)")
+            lastKnownRegion = selectedRegionForStatus
+            
+            // Clear cache since it's for a different region
+            cachedMonthlyTimes = nil
+            lastFetchDate = nil
+            
+            // Fetch new data for the new region
+            refreshPrayerTimes()
+        } else {
+            // Other settings changed (countdown, notifications, etc.)
+            print("Other settings changed, updating display")
+            // Just update the display without fetching
+            updateDisplay()
+            
+            // If notification setting changed, reschedule
+            if showNotification {
+                scheduleAllNotifications()
+            } else {
+                UNUserNotificationCenter.current().removeAllPendingNotificationRequests()
+            }
+        }
     }
     
     func scheduleMidnightRefresh() {
@@ -85,6 +132,31 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         midnightTimer?.invalidate()
         countdownTimer?.invalidate()
         retryTimer?.invalidate()
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
+    }
+    
+    @objc func handleWakeFromSleep() {
+        print("Mac woke from sleep, refreshing display...")
+        
+        // Check if we've crossed into a new day while sleeping
+        let calendar = Calendar.current
+        if let lastFetch = lastFetchDate,
+           !calendar.isDateInToday(lastFetch) {
+            // Crossed midnight, need to fetch new data
+            refreshPrayerTimes()
+        } else {
+            // Same day, just update the display
+            updateDisplay()
+        }
+        
+        // Reschedule midnight timer in case it was missed
+        midnightTimer?.invalidate()
+        scheduleMidnightRefresh()
+    }
+    
+    @objc func handleScreenUnlock() {
+        // When screen wakes, check if we need to update
+        checkForPrayerTimeChange()
     }
     
     @objc func refreshPrayerTimes() {
@@ -183,6 +255,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     
+    func checkForPrayerTimeChange() {
+        guard let allTimes = cachedMonthlyTimes,
+              let today = allTimes.first(where: { $0.isToday() }) else {
+            return
+        }
+        
+        let next = self.getNextPrayerTime(from: today)
+        let currentTitle = self.statusItem.button?.title ?? ""
+        
+        // If the next prayer has changed (time passed), update everything
+        if !currentTitle.contains(next.name) {
+            print("Prayer time changed, updating display and notifications")
+            updateDisplay()
+            if showNotification {
+                scheduleAllNotifications()
+            }
+        }
+    }
+    
     func scheduleAllNotifications() {
         guard showNotification, let allTimes = cachedMonthlyTimes else { return }
         
@@ -217,7 +308,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         // If we're near end of month and have less than 7 days scheduled,
         // try to fetch next month's data proactively
-        _ = calendar.component(.month, from: today)
+        let currentMonth = calendar.component(.month, from: today)
         if let lastDate = allTimes.last,
            let lastDateParsed = formatter.date(from: lastDate.date) {
             let daysUntilEnd = calendar.dateComponents([.day], from: today, to: lastDateParsed).day ?? 0
@@ -243,6 +334,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             
             self?.countdownTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
                 self?.updateCountdownDisplay(to: time, label: label)
+                // Also check if prayer time has changed (in case we missed it due to sleep)
+                self?.checkForPrayerTimeChange()
             }
         }
     }
@@ -327,6 +420,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
+        // All today's prayers passed, return tomorrow's Bomdod
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyy-MM-dd"
+        
+        if let tomorrow = calendar.date(byAdding: .day, value: 1, to: now) {
+            let tomorrowDateStr = dateFormatter.string(from: tomorrow)
+            
+            // Try to find tomorrow's data in cache
+            if let tomorrowTimes = cachedMonthlyTimes?.first(where: { $0.date == tomorrowDateStr }) {
+                let fallbackTime = String(tomorrowTimes.bomdod.prefix(5))
+                return ("Bomdod", fallbackTime)
+            }
+        }
+        
+        // Fallback: use today's Bomdod time (countdown will add 1 day automatically)
         let fallbackTime = String(times.bomdod.prefix(5))
         return ("Bomdod", fallbackTime)
     }
