@@ -89,7 +89,7 @@ Countdown Mode:  Asr -02:45
 ### From Source
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/namoz-vaqtlari.git
+git clone https://github.com/rakhmatillo/namoz-vaqtlari.git
 cd namoz-vaqtlari
 ```
 
@@ -101,7 +101,7 @@ open "Namoz vaqtlari.xcodeproj"
 3. Build and run (⌘R)
 
 ### From Release
-1. Download the latest release from [Releases](https://github.com/yourusername/namoz-vaqtlari/releases)
+1. Download the latest release from [Releases](https://github.com/rakhmatillo/namoz-vaqtlari/releases)
 2. Drag the app to your Applications folder
 3. Launch the app
 4. Grant notification permissions when prompted
