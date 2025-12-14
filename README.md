@@ -8,8 +8,8 @@ A lightweight macOS menu bar application that displays Islamic prayer times for 
 
 ## Features
 
-### 🕌 Prayer Times Display in menu bar 
-- **Real-time prayer times** only for all Uzbekistan regions
+### 🕌 Prayer Times Display
+- **Real-time prayer times** for all Uzbekistan regions
 - **Smart display modes**:
   - Simple mode: Shows next prayer name and time
   - Countdown mode: Live countdown to next prayer (updates every minute)
@@ -22,14 +22,14 @@ Supports all 13 regions of Uzbekistan:
 - Buxoro (Bukhara)
 - Farg'ona (Fergana)
 - Jizzax (Jizzakh)
-- Xiva (Khorezm)
+- Xiva (Khiva)
 - Namangan
 - Navoiy (Navoi)
 - Qashqadaryo (Kashkadarya)
 - Qoraqalpog'iston (Karakalpakstan)
 - Samarqand (Samarkand)
 - Sirdaryo (Syrdarya)
-- Surxandaryo (Surkhandarya)
+- Surxondaryo (Surkhandarya)
 
 ### 🔔 Smart Notifications
 - **Customizable notification timing**: 0, 5, 10, 15, or 30 minutes before prayer time
@@ -130,16 +130,17 @@ open "Namoz vaqtlari.xcodeproj"
 ### Project Structure
 ```
 Namoz vaqtlari/
+├── Namoz_vaqtlariApp.swift       # App entry point
 ├── AppDelegate.swift              # Main app logic, timers, notifications
 ├── PrayerTimeManager.swift        # API client for fetching prayer times
-├── Models/
-│   └── DailyPrayerTime.swift     # Data models
+├── MonthlyPrayerResponse.swift    # Data models (DailyPrayerTime)
 ├── Views/
 │   ├── SettingsView.swift        # Settings interface
 │   ├── MonthlyPrayerView.swift   # Monthly calendar view
-│   └── SwiftUIWindowController.swift
-└── Resources/
-    └── Info.plist
+│   └── SwiftUIWindowController.swift # Window management
+├── Assets.xcassets/               # App icons and assets
+├── Namoz_vaqtlari.entitlements   # App permissions
+└── Namoz-vaqtlari-Info.plist     # App configuration
 ```
 
 ### Key Components
