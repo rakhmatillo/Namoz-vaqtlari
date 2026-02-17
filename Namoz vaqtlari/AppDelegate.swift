@@ -44,10 +44,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     /// Timer for updating the countdown display every minute
     var countdownTimer: Timer?
-    
+
+    /// One-shot timer that syncs countdown updates to the minute boundary
+    var syncTimer: Timer?
+
     /// Timer that fires at midnight to refresh prayer times for the new day
     var midnightTimer: Timer?
-    
+
     /// Timer for retrying failed network requests with exponential backoff
     var retryTimer: Timer?
     
@@ -74,6 +77,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     /// Last known selected region (used to detect region changes)
     var lastKnownRegion: String = ""
+
+    /// Last known settings values (used to detect actual changes vs system noise)
+    var lastKnownShowCountdown: Bool = false
+    var lastKnownShowNotification: Bool = true
+    var lastKnownNotificationOffset: Int = 10
     
     // MARK: - Application Lifecycle
     
@@ -82,6 +90,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Subscribe to UserDefaults changes to detect settings modifications
         NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)
+            .debounce(for: .milliseconds(100), scheduler: RunLoop.main)
             .sink { [weak self] _ in
                 self?.handleSettingsChange()
             }
@@ -134,14 +143,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Fetch initial prayer times
         refreshPrayerTimes()
         
-        // Store the initial region for change detection
+        // Store the initial settings for change detection
         lastKnownRegion = selectedRegionForStatus
+        lastKnownShowCountdown = showCountdown
+        lastKnownShowNotification = showNotification
+        lastKnownNotificationOffset = UserDefaults.standard.integer(forKey: "notificationOffset")
     }
     
     /// Called when the application is about to terminate.
     /// Cleans up timers and observers.
     func applicationWillTerminate(_ notification: Notification) {
         midnightTimer?.invalidate()
+        syncTimer?.invalidate()
         countdownTimer?.invalidate()
         retryTimer?.invalidate()
         NSWorkspace.shared.notificationCenter.removeObserver(self)
@@ -153,27 +166,38 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// If the region changed, clears cache and fetches new data.
     /// Otherwise, just updates the display or notification scheduling.
     func handleSettingsChange() {
-        print("handleSettingsChange called - Region: \(selectedRegionForStatus)")
-        
-        // Check if region changed
-        if lastKnownRegion != selectedRegionForStatus {
-            print("Region changed from \(lastKnownRegion) to \(selectedRegionForStatus)")
-            lastKnownRegion = selectedRegionForStatus
-            
-            // Clear cache since it's for a different region
+        let currentNotificationOffset = UserDefaults.standard.integer(forKey: "notificationOffset")
+
+        // Check if any of our settings actually changed (ignore system UserDefaults noise)
+        let regionChanged = lastKnownRegion != selectedRegionForStatus
+        let countdownChanged = lastKnownShowCountdown != showCountdown
+        let notificationChanged = lastKnownShowNotification != showNotification
+        let offsetChanged = lastKnownNotificationOffset != currentNotificationOffset
+
+        guard regionChanged || countdownChanged || notificationChanged || offsetChanged else {
+            return // No relevant settings changed, ignore
+        }
+
+        // Update all tracked values
+        lastKnownRegion = selectedRegionForStatus
+        lastKnownShowCountdown = showCountdown
+        lastKnownShowNotification = showNotification
+        lastKnownNotificationOffset = currentNotificationOffset
+
+        if regionChanged {
+            print("Region changed to \(selectedRegionForStatus)")
             cachedMonthlyTimes = nil
             lastFetchDate = nil
-            
-            // Fetch new data for the new region
             refreshPrayerTimes()
-        } else {
-            // Other settings changed (countdown, notifications, etc.)
-            print("Other settings changed, updating display")
-            
-            // Just update the display without fetching
+            return
+        }
+
+        if countdownChanged {
+            print("Countdown mode changed to \(showCountdown)")
             updateDisplay()
-            
-            // If notification setting changed, reschedule
+        }
+
+        if notificationChanged || offsetChanged {
             if showNotification {
                 scheduleAllNotifications()
             } else {
@@ -294,15 +318,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     return
                 }
                 
-                // Success! Clear retry counter and save data
-                self.retryCount = 0
-                self.retryTimer?.invalidate()
-                self.retryTimer = nil
-                
-                self.cachedMonthlyTimes = allTimes
-                self.lastFetchDate = Date()
-                self.updateDisplay()
-                self.scheduleAllNotifications()
+                // Success! Update cache and display on main thread to avoid data races
+                DispatchQueue.main.async {
+                    self.retryCount = 0
+                    self.retryTimer?.invalidate()
+                    self.retryTimer = nil
+
+                    self.cachedMonthlyTimes = allTimes
+                    self.lastFetchDate = Date()
+                    self.updateDisplay()
+                    self.scheduleAllNotifications()
+                }
             }
         } else {
             // Cache is fresh, just update display
@@ -420,10 +446,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 ("Xufton", dayTimes.xufton)
             ]
             
+            let notificationOffset = UserDefaults.standard.integer(forKey: "notificationOffset")
             for (name, time) in prayers {
+                let body: String
+                if notificationOffset > 0 {
+                    body = "\(name) namoz vaqtigacha \(notificationOffset) daqiqa qoldi"
+                } else {
+                    body = "\(name) namoz vaqti kirdi"
+                }
                 schedulePrayerNotification(
                     title: "\(name) vaqti",
-                    body: "\(name) namoz vaqti keldi",
+                    body: body,
                     at: time,
                     on: date
                 )
@@ -453,12 +486,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         timeFormatter.dateFormat = "HH:mm:ss"
 
         guard let timeOnly = timeFormatter.date(from: time) else { return }
-        
+
         let calendar = Calendar.current
+        let notificationOffset = UserDefaults.standard.integer(forKey: "notificationOffset")
+
+        // Build full date+time, then subtract notification offset
         var components = calendar.dateComponents([.year, .month, .day], from: date)
         let timeComponents = calendar.dateComponents([.hour, .minute], from: timeOnly)
         components.hour = timeComponents.hour
         components.minute = timeComponents.minute
+
+        guard let prayerDate = calendar.date(from: components) else { return }
+        let notifyDate = calendar.date(byAdding: .minute, value: -notificationOffset, to: prayerDate) ?? prayerDate
+        components = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: notifyDate)
 
         // Create notification content
         let content = UNMutableNotificationContent()
@@ -498,9 +538,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let secondsUntilNextMinute = 60 - seconds
         
         // Schedule one-time timer to sync to the minute mark
-        Timer.scheduledTimer(withTimeInterval: TimeInterval(secondsUntilNextMinute), repeats: false) { [weak self] _ in
+        syncTimer = Timer.scheduledTimer(withTimeInterval: TimeInterval(secondsUntilNextMinute), repeats: false) { [weak self] _ in
+            self?.syncTimer = nil
             self?.updateCountdownDisplay(to: time, label: label)
-            
+
             // Now start repeating timer that fires every 60 seconds
             self?.countdownTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
                 self?.updateCountdownDisplay(to: time, label: label)
@@ -526,8 +567,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     
-    /// Stops and invalidates the countdown timer.
+    /// Stops and invalidates all countdown timers (both the sync timer and repeating timer).
     func stopCountdown() {
+        syncTimer?.invalidate()
+        syncTimer = nil
         countdownTimer?.invalidate()
         countdownTimer = nil
     }
