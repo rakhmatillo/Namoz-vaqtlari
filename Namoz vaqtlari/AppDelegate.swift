@@ -70,8 +70,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// Timestamp of the last successful data fetch
     var lastFetchDate: Date?
     
+    // MARK: - Date Formatters (reused to avoid repeated allocation)
+
+    static let timeFormatterHHmm: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm"
+        return f
+    }()
+
+    static let timeFormatterHHmmss: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss"
+        return f
+    }()
+
+    static let dateFormatterYMD: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
+
     // MARK: - State Management
-    
+
     /// Counter for tracking retry attempts (for exponential backoff)
     var retryCount: Int = 0
     
@@ -82,6 +102,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var lastKnownShowCountdown: Bool = false
     var lastKnownShowNotification: Bool = true
     var lastKnownNotificationOffset: Int = 10
+
+    /// Currently displayed prayer name (used for reliable prayer transition detection)
+    var currentPrayerName: String = ""
     
     // MARK: - Application Lifecycle
     
@@ -328,6 +351,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     self.lastFetchDate = Date()
                     self.updateDisplay()
                     self.scheduleAllNotifications()
+                    self.fetchNextMonthIfNeeded()
                 }
             }
         } else {
@@ -354,8 +378,40 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     
+    /// If we're in the last 3 days of the month, fetch next month's data and append to cache.
+    /// This prevents a data gap on the last day when all prayers pass and we need tomorrow's Bomdod.
+    /// Silently ignores failures (API may not have next month data yet).
+    func fetchNextMonthIfNeeded() {
+        let calendar = Calendar.current
+        let now = Date()
+
+        guard let cachedTimes = cachedMonthlyTimes,
+              let lastEntry = cachedTimes.last,
+              let lastDate = Self.dateFormatterYMD.date(from: lastEntry.date) else { return }
+
+        let daysUntilEnd = calendar.dateComponents([.day], from: now, to: lastDate).day ?? 0
+        guard daysUntilEnd < 3 else { return }
+
+        // Check if we already have next month data in cache
+        guard let firstOfNextMonth = calendar.date(byAdding: .month, value: 1, to: calendar.startOfDay(for: now)) else { return }
+        let nextMonthComponents = calendar.dateComponents([.year, .month], from: firstOfNextMonth)
+        let nextMonthStr = Self.dateFormatterYMD.string(from: firstOfNextMonth).prefix(7) // "yyyy-MM"
+        let alreadyHasNextMonth = cachedTimes.contains { $0.date.hasPrefix(String(nextMonthStr)) }
+        guard !alreadyHasNextMonth else { return }
+
+        let year = nextMonthComponents.year ?? calendar.component(.year, from: now)
+        let month = String(format: "%02d", nextMonthComponents.month ?? 1)
+
+        PrayerTimeManager.shared.fetchMonthlyPrayerTimes(for: selectedRegionForStatus, year: year, month: month) { [weak self] nextMonthTimes in
+            guard let self = self, let nextMonthTimes = nextMonthTimes else { return }
+            DispatchQueue.main.async {
+                self.cachedMonthlyTimes?.append(contentsOf: nextMonthTimes)
+            }
+        }
+    }
+
     // MARK: - Display Management
-    
+
     /// Updates the menu bar display with the next prayer time.
     /// Uses cached data to determine what to show.
     /// Handles both countdown mode and simple time display mode.
@@ -380,6 +436,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let next = self.getNextPrayerTime(from: allTimes, today: today)
         
         DispatchQueue.main.async {
+            self.currentPrayerName = next.name
+
             if self.showCountdown {
                 // Show countdown mode: "Asr -02:45"
                 self.startCountdown(to: next.time, label: next.name)
@@ -398,13 +456,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
               let today = allTimes.first(where: { $0.isToday() }) else {
             return
         }
-        
+
         let next = self.getNextPrayerTime(from: allTimes, today: today)
-        let currentTitle = self.statusItem.button?.title ?? ""
-        
-        // If the prayer name changed, we passed a prayer time
-        if !currentTitle.contains(next.name) {
-            print("Prayer time changed, updating display and notifications")
+
+        // Compare against tracked prayer name, not the UI title string
+        if next.name != currentPrayerName {
+            print("Prayer time changed from \(currentPrayerName) to \(next.name)")
             updateDisplay()
             if showNotification {
                 scheduleAllNotifications()
@@ -422,17 +479,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         // Clear all pending notifications first
         UNUserNotificationCenter.current().removeAllPendingNotificationRequests()
-        
+
         let calendar = Calendar.current
         let today = Date()
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        
+
         // Schedule for up to 10 days ahead
         let daysToSchedule = min(allTimes.count, 10)
-        
+
         for dayTimes in allTimes.prefix(daysToSchedule) {
-            guard let date = formatter.date(from: dayTimes.date) else { continue }
+            guard let date = Self.dateFormatterYMD.date(from: dayTimes.date) else { continue }
             
             // Skip dates in the past
             if calendar.startOfDay(for: date) < calendar.startOfDay(for: today) { continue }
@@ -463,16 +518,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         
-        // Log if we're near end of month
-        let currentMonth = calendar.component(.month, from: today)
-        if let lastDate = allTimes.last,
-           let lastDateParsed = formatter.date(from: lastDate.date) {
-            let daysUntilEnd = calendar.dateComponents([.day], from: today, to: lastDateParsed).day ?? 0
-            
-            if daysUntilEnd < 7 {
-                print("Near end of month (\(daysUntilEnd) days left), will fetch next month data at midnight")
-            }
-        }
     }
     
     /// Schedules a single notification for a specific prayer time.
@@ -482,10 +527,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     ///   - time: Prayer time in "HH:mm:ss" format
     ///   - date: The date for this prayer
     func schedulePrayerNotification(title: String, body: String, at time: String, on date: Date) {
-        let timeFormatter = DateFormatter()
-        timeFormatter.dateFormat = "HH:mm:ss"
-
-        guard let timeOnly = timeFormatter.date(from: time) else { return }
+        guard let timeOnly = Self.timeFormatterHHmmss.date(from: time) else { return }
 
         let calendar = Calendar.current
         let notificationOffset = UserDefaults.standard.integer(forKey: "notificationOffset")
@@ -580,10 +622,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// - Parameter time: Prayer time in "HH:mm" format
     /// - Returns: Remaining time in "HH:MM" format, or nil if time has passed
     func getLiveCountdown(to time: String) -> String? {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm"
-
-        guard let timeOnly = formatter.date(from: time) else { return nil }
+        guard let timeOnly = Self.timeFormatterHHmm.date(from: time) else { return nil }
 
         let now = Date()
         let calendar = Calendar.current
@@ -623,10 +662,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// - Returns: Tuple containing the prayer name and time
     func getNextPrayerTime(from allTimes: [DailyPrayerTime], today: DailyPrayerTime) -> (name: String, time: String) {
         let now = Date()
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm:ss"
-        let displayFormatter = DateFormatter()
-        displayFormatter.dateFormat = "HH:mm"
 
         // Today's prayer schedule
         let schedule: [(String, String)] = [
@@ -642,7 +677,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Check each prayer time to find the next one
         for (name, timeStr) in schedule {
-            guard let timeOnly = formatter.date(from: timeStr) else { continue }
+            guard let timeOnly = Self.timeFormatterHHmmss.date(from: timeStr) else { continue }
 
             var components = calendar.dateComponents([.hour, .minute, .second], from: timeOnly)
             components.year = todayComponents.year
@@ -650,17 +685,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             components.day = todayComponents.day
 
             if let fullDate = calendar.date(from: components), fullDate > now {
-                let displayTime = displayFormatter.string(from: fullDate)
+                let displayTime = Self.timeFormatterHHmm.string(from: fullDate)
                 return (name, displayTime)
             }
         }
 
         // All today's prayers passed, get tomorrow's Bomdod
-        let dateFormatter = DateFormatter()
-        dateFormatter.dateFormat = "yyyy-MM-dd"
-        
         if let tomorrow = calendar.date(byAdding: .day, value: 1, to: now) {
-            let tomorrowDateStr = dateFormatter.string(from: tomorrow)
+            let tomorrowDateStr = Self.dateFormatterYMD.string(from: tomorrow)
             
             // Find tomorrow's data in the full cache
             if let tomorrowTimes = allTimes.first(where: { $0.date == tomorrowDateStr }) {
